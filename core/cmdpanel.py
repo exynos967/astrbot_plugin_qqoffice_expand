@@ -27,7 +27,8 @@ __all__ = [
     "DESC_WIDTH_LIMIT",
     "visual_len",
     "normalize_commands",
-    "build_panels",
+    "pick_panel_prefix",
+    "select_panel_items",
     "collect_commands",
     "collect_command_entries",
     "OverrideStore",
@@ -35,12 +36,15 @@ __all__ = [
 ]
 
 MARKER = "astrbot-cmdpanel"
-"""托管面板 remark 前缀：「astrbot-cmdpanel {序号}/{总数}」，同步时按此前缀识别。"""
+"""托管面板 remark 标记，同步时按此前缀识别（历史分片「MARKER i/n」同属托管）。"""
 
-MAX_PANELS = 20            # 官方：单机器人最多 20 个指令面板
-MAX_ITEMS_PER_PANEL = 20   # 官方：单面板最多 20 个元素
-NAME_WIDTH_LIMIT = 14      # 官方：name 最多 14 字符（中文按 2 计）
-DESC_WIDTH_LIMIT = 30      # 官方：desc 最多 30 字符（中文按 2 计）
+MAX_PANEL_ITEMS = 20     # 官方：单面板最多 20 个元素
+NAME_WIDTH_LIMIT = 14    # 官方：name 最多 14 字符（中文按 2 计）
+DESC_WIDTH_LIMIT = 30    # 官方：desc 最多 30 字符（中文按 2 计）
+
+# 实测（2026-09）：同一 scope 的全局面板只保留最新创建的一个（后建顶掉先建），
+# 因此每个场景只维护一个面板，指令超出 20 条时按优先级截断；
+# 且官方会剥离面板项 name 开头的 "/"，故前缀必须取 AstrBot 实际唤醒前缀。
 
 SCOPES = ("c2c", "group", "channel", "dm")
 DEFAULT_SCOPES = ["c2c", "group"]
@@ -62,17 +66,18 @@ def _truncate(s: str, limit: int) -> str:
     return "".join(out)
 
 
-def normalize_commands(raw: list[tuple[str, str, bool]]) -> list[dict]:
+def normalize_commands(raw: list[tuple[str, str, bool]], prefix: str = "/") -> list[dict]:
     """(指令名, 描述, 仅管理员) 原始列表 → 符合官方约束的 PanelItem 列表。
 
-    面板项 name 会填入聊天输入框，统一带 "/" 前缀以命中默认唤醒前缀；超宽或
-    含空白字符的指令无法进面板。同名先去重（先注册优先），输出按名称排序。
+    面板项 name 点击后填入聊天输入框，必须带 AstrBot 实际唤醒前缀才能触发指令
+    （官方会剥离开头的 "/"，故前缀由调用方从运行配置选取）。保持入参顺序，
+    同名先去重（先注册优先）。
     """
     items: dict[str, dict] = {}
     for name, desc, only_admin in raw:
         if not name or any(ch.isspace() for ch in name):
             continue
-        item_name = f"/{name}"
+        item_name = f"{prefix}{name}"
         if visual_len(item_name) > NAME_WIDTH_LIMIT:
             continue
         text = _truncate((desc or "").strip() or f"指令: {name}", DESC_WIDTH_LIMIT)
@@ -82,28 +87,54 @@ def normalize_commands(raw: list[tuple[str, str, bool]]) -> list[dict]:
             "desc": text,
             "only_admin": bool(only_admin),
         })
-    return [items[k] for k in sorted(items)]
+    return list(items.values())
 
 
-def build_panels(items: list[dict]) -> list[dict]:
-    """按单面板 20 元素分片；remark 带 MARKER 与序号，供同步时识别托管面板。"""
-    chunks = [
-        items[i:i + MAX_ITEMS_PER_PANEL]
-        for i in range(0, len(items), MAX_ITEMS_PER_PANEL)
-    ][:MAX_PANELS]
-    total = len(chunks)
-    return [
-        {"items": chunk, "remark": f"{MARKER} {i + 1}/{total}"}
-        for i, chunk in enumerate(chunks)
-    ]
+def pick_panel_prefix(wake_prefixes) -> str:
+    """从 AstrBot 唤醒前缀中选面板可用前缀：官方会剥离开头的 "/"，优先短符号。"""
+    prefs = [p for p in wake_prefixes or [] if isinstance(p, str)]
+    if "" in prefs:
+        return ""                       # 允许裸指令触发
+    candidates = [p for p in prefs if p and not p.startswith("/")]
+    if candidates:
+        return min(candidates, key=visual_len)
+    return ""                           # 仅 "/" 前缀：面板指令无法触发，退化为裸名展示
 
 
-def collect_command_entries(disabled: set | frozenset | None = None) -> list[dict]:
+def select_panel_items(entries: list[dict], prefix: str = "/") -> tuple[list[dict], set]:
+    """从指令条目选出最终上面板的项（全局面板每场景仅一个，≤20 元素）。
+
+    优先级：主指令 > 别名，名称升序；同名先去重。返回 (PanelItem 列表,
+    入选条目的 "module:指令名" 键集合)（键集合供页面标记未入选指令）。
+    """
+    ordered = sorted(
+        (e for e in entries if e["enabled"]),
+        key=lambda e: (e["is_alias"], e["name"]),
+    )
+    chosen: list[dict] = []
+    seen: set[str] = set()
+    for e in ordered:
+        if e["name"] in seen:
+            continue
+        if visual_len(f"{prefix}{e['name']}") > NAME_WIDTH_LIMIT:
+            continue
+        seen.add(e["name"])
+        chosen.append(e)
+        if len(chosen) >= MAX_PANEL_ITEMS:
+            break
+    items = normalize_commands(
+        [(e["name"], e["desc"], e["only_admin"]) for e in chosen], prefix
+    )
+    return items, {f"{e['module']}:{e['name']}" for e in chosen}
+
+
+def collect_command_entries(disabled: set | frozenset | None = None,
+                            prefix: str = "/") -> list[dict]:
     """收集系统与已激活插件的全部指令条目（含插件归属与开关态）。
 
     页面展示与面板同步共用的单一事实来源；disabled 为 "module:指令名"
     键集合（见 OverrideStore.disabled_set）。条目字段：plugin/module/name/
-    desc/only_admin/is_alias/panel_ok/enabled。
+    desc/only_admin/is_alias/panel_ok/enabled。panel_ok 按实际唤醒前缀判宽。
 
     与 telegram 适配器 collect_commands 同策略：跳过未激活/停用处理器与子指令；
     指令组登记组名；带管理员权限过滤器的指令标记 only_admin。
@@ -150,22 +181,24 @@ def collect_command_entries(disabled: set | frozenset | None = None) -> list[dic
                     "desc": desc,
                     "only_admin": only_admin,
                     "is_alias": is_alias,
-                    "panel_ok": visual_len(f"/{name}") <= NAME_WIDTH_LIMIT,
+                    "panel_ok": visual_len(f"{prefix}{name}") <= NAME_WIDTH_LIMIT,
                     "enabled": f"{module}:{name}" not in disabled,
                 })
     return entries
 
 
-def collect_commands(disabled: set | frozenset | None = None) -> list[dict]:
-    """收集应注册到指令面板的指令：启用且符合官方约束，同名先去重。"""
-    raw: list[tuple[str, str, bool]] = []
-    seen: set[str] = set()
-    for e in collect_command_entries(disabled):
-        if not e["enabled"] or not e["panel_ok"] or e["name"] in seen:
-            continue
-        seen.add(e["name"])
-        raw.append((e["name"], e["desc"], e["only_admin"]))
-    return normalize_commands(raw)
+def collect_commands(disabled: set | frozenset | None = None,
+                     prefix: str = "/") -> list[dict]:
+    """收集应注册到指令面板的指令（≤20，主指令优先，启用且合规）。"""
+    items, _ = select_panel_items(collect_command_entries(disabled, prefix), prefix)
+    return items
+
+
+def build_panel(items: list[dict]) -> dict | None:
+    """单面板负载（remark 带托管标记）；空指令集返回 None 表示应清除托管面板。"""
+    if not items:
+        return None
+    return {"items": items, "remark": MARKER}
 
 
 class OverrideStore:
@@ -321,7 +354,7 @@ class CommandPanelSyncer:
             sig = hashlib.sha1(
                 repr((scopes, [_item_key(i) for i in items])).encode()
             ).hexdigest()
-            panels = build_panels(items)
+            panel = build_panel(items)
             done, failed = [], []
             seen: set[str] = set()
             for route in list(self._svc.routes.routes.values()):
@@ -334,7 +367,7 @@ class CommandPanelSyncer:
                         continue
                     try:
                         view = self._svc.instance(route.platform_id)
-                        await self._sync_scope(view, scope, panels)
+                        await self._sync_scope(view, scope, panel)
                     except Exception as exc:
                         failed.append(f"{prefix}/{scope}")
                         self._log("warning", f"指令面板同步失败 {prefix}/{scope}: {exc!r}")
@@ -347,7 +380,7 @@ class CommandPanelSyncer:
                     self._synced.pop(key, None)
             if done or failed:
                 self.last_result = (
-                    f"同步 {len(done)} 个目标（{len(items)} 条指令/{len(panels)} 面板）"
+                    f"同步 {len(done)} 个目标（{len(items)} 条指令）"
                     + (f"，失败 {len(failed)}: {', '.join(failed)}" if failed else "")
                 )
                 self._log("info", f"指令面板{self.last_result}")
@@ -358,7 +391,7 @@ class CommandPanelSyncer:
             self._log("error", f"指令面板{self.last_result}")
 
     async def _list_managed(self, view, scope: str) -> list[dict]:
-        """分页拉取该场景下本插件托管的面板（remark 前缀识别），按序号排序。"""
+        """分页拉取该场景下本插件托管的面板（remark 前缀识别，含历史分片）。"""
         managed: list[dict] = []
         cursor = ""
         while True:
@@ -373,20 +406,27 @@ class CommandPanelSyncer:
         managed.sort(key=_panel_seq)
         return managed
 
-    async def _sync_scope(self, view, scope: str, panels: list[dict]) -> None:
-        """单实例单场景幂等对齐：更新不符、创建缺失、删除多余。"""
+    async def _sync_scope(self, view, scope: str, desired: dict | None) -> None:
+        """单实例单场景幂等对齐：每场景仅一个全局面板（实测后建顶掉先建）。
+
+        desired 为 None（空指令集）时摘除全部托管面板；存在多个托管面板
+        （历史分片）时更新第一个、删除其余。
+        """
         existing = await self._list_managed(view, scope)
-        for i, desired in enumerate(panels):
-            if i < len(existing):
-                cur = existing[i]
-                cur_items = [_item_key(x)
-                             for x in (cur.get("panel") or {}).get("items") or []]
-                if cur_items != [_item_key(x) for x in desired["items"]]:
-                    await view.manage.panel_update(cur["panel_id"], desired)
-            else:
-                await view.manage.panel_create(scope, desired, target_type="all")
-        for extra in existing[len(panels):]:
-            await view.manage.panel_delete(extra["panel_id"])
+        if desired is None:
+            for rec in existing:
+                await view.manage.panel_delete(rec["panel_id"])
+            return
+        if not existing:
+            await view.manage.panel_create(scope, desired, target_type="all")
+            return
+        first, rest = existing[0], existing[1:]
+        cur_items = [_item_key(x)
+                     for x in (first.get("panel") or {}).get("items") or []]
+        if cur_items != [_item_key(x) for x in desired["items"]]:
+            await view.manage.panel_update(first["panel_id"], desired)
+        for rec in rest:
+            await view.manage.panel_delete(rec["panel_id"])
 
     async def _cleanup(self) -> None:
         """开关关闭：摘除已知身份的全部托管面板，清空签名缓存。"""

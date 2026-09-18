@@ -374,8 +374,9 @@ asyncio.run(star_wait_test())
 
 # ---------- cmdpanel（指令面板同步）----------
 from core.cmdpanel import (MARKER, CommandPanelSyncer, OverrideStore,
-                           _admin_permission_types, build_panels,
-                           normalize_commands, visual_len)
+                           _admin_permission_types, build_panel,
+                           normalize_commands, pick_panel_prefix,
+                           select_panel_items, visual_len)
 
 t("visual len ascii", visual_len("/help") == 5)
 t("visual len cjk", visual_len("/签到") == 5)
@@ -390,17 +391,35 @@ _items = normalize_commands([
     ("op", "", True),
 ])
 _names = [i["name"] for i in _items]
-t("normalize prefix+sort", _names == ["/h", "/help", "/op"])
-t("normalize dedupe first wins", _items[1]["desc"] == "显示帮助" and _items[1]["only_admin"] is False)
+t("normalize prefix+ordered", _names == ["/help", "/h", "/op"])
+t("normalize custom prefix", normalize_commands([("签到", "d", False)], prefix="#")[0]["name"] == "#签到")
+t("normalize dedupe first wins", _items[0]["desc"] == "显示帮助" and _items[0]["only_admin"] is False)
 t("normalize only_admin+default desc", _items[2]["only_admin"] is True and _items[2]["desc"] == "指令: op")
 t("normalize desc truncate",
   visual_len(normalize_commands([("a", "描述" * 20, False)])[0]["desc"]) <= 30)
 
-_big = normalize_commands([(f"cmd{i:02d}", f"d{i}", False) for i in range(45)])
-_panels = build_panels(_big)
-t("panels chunk", len(_panels) == 3 and len(_panels[0]["items"]) == 20 and len(_panels[2]["items"]) == 5)
-t("panels remark", _panels[1]["remark"] == f"{MARKER} 2/3")
-t("panels empty", build_panels([]) == [])
+# 前缀选取：QQ 剥离开头 "/"，优先非斜杠短前缀
+t("prefix prefer symbol", pick_panel_prefix(["#", "真寻"]) == "#")
+t("prefix slash-only dead", pick_panel_prefix(["/"]) == "")
+t("prefix blank allowed", pick_panel_prefix(["", "/"]) == "")
+t("prefix fallback", pick_panel_prefix(None) == "")
+t("prefix non-slash picked", pick_panel_prefix(["/abd", "#"]) == "#")
+
+# 面板项选择：主指令优先于别名、≤20、按真实前缀判宽
+def _entry(name, is_alias=False, enabled=True, module="m"):
+    return {"plugin": "p", "module": module, "name": name, "desc": "d",
+            "only_admin": False, "is_alias": is_alias, "enabled": enabled,
+            "panel_ok": visual_len(f"#{name}") <= 14}
+
+_sel, _keys = select_panel_items(
+    [_entry("zeta"), _entry("a", is_alias=True), _entry("beta"), _entry("zeta", module="m2"),
+     _entry("off", enabled=False)], "#")
+t("select order+dedupe", [i["name"] for i in _sel] == ["#beta", "#zeta", "#a"])
+t("select keys", _keys == {"m:beta", "m:zeta", "m:a"})
+_sel2, _keys2 = select_panel_items([_entry(f"c{i:02d}") for i in range(25)], "#")
+t("select cap 20", len(_sel2) == 20 and len(_keys2) == 20)
+t("build panel marker", build_panel(_sel2)["remark"] == MARKER)
+t("build panel empty", build_panel([]) is None)
 
 
 class _FakeManage:

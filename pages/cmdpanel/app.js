@@ -32,6 +32,7 @@ function renderStatus() {
   parts.push(onoff);
   parts.push(document.createTextNode(" \u00b7 "));
   parts.push(el("b", "", "场景：" + (s.scopes || []).join("/")));
+  parts.push(document.createTextNode(" \u00b7 面板前缀：" + JSON.stringify(state.prefix ?? "/")));
   if ((s.synced || []).length) {
     parts.push(document.createTextNode(" \u00b7 已同步 " + s.synced.length + " 个目标"));
   }
@@ -40,6 +41,10 @@ function renderStatus() {
   }
   if (!s.enabled) {
     parts.push(document.createTextNode("（总开关已关，请到插件配置开启 command_panel_sync）"));
+  }
+  if (state.prefix_dead) {
+    parts.push(el("span", "off",
+      " ⚠ 唤醒前缀仅含 /，QQ 会剥离开头的 /，面板指令将无法触发；请在 AstrBot 设置中把唤醒前缀加上 # 等符号"));
   }
   for (const node of parts) statusEl.appendChild(node);
 }
@@ -78,10 +83,11 @@ function buildRow(cmd) {
   const row = el("div", "cmd-row" + (cmd.enabled ? "" : " dim"));
   const info = el("div", "cmd-info");
   const head = el("div", "cmd-head");
-  head.appendChild(el("code", "cmd-name", "/" + cmd.name));
+  head.appendChild(el("code", "cmd-name", (state.prefix ?? "/") + cmd.name));
   if (cmd.is_alias) head.appendChild(el("span", "tag", "别名"));
   if (cmd.only_admin) head.appendChild(el("span", "tag tag-admin", "管理员"));
   if (!cmd.panel_ok) head.appendChild(el("span", "tag tag-wide", "超宽不注册"));
+  else if (cmd.enabled && !cmd.selected) head.appendChild(el("span", "tag tag-wide", "容量外"));
   info.appendChild(head);
   info.appendChild(el("div", "cmd-desc", cmd.desc || "（无描述）"));
   row.appendChild(info);
@@ -109,8 +115,8 @@ function render() {
     const header = el("div", "group-header");
     header.appendChild(el("span", "group-line"));
     header.appendChild(el("span", "group-name", group.plugin));
-    const onCount = cmds.filter((c) => c.enabled && c.panel_ok).length;
-    header.appendChild(el("span", "group-count", onCount + "/" + cmds.length + " 注册"));
+    const onCount = cmds.filter((c) => c.selected).length;
+    header.appendChild(el("span", "group-count", onCount + "/" + cmds.length + " 上面板"));
     header.appendChild(el("span", "group-line"));
     section.appendChild(header);
     const list = el("div", "cmd-list");

@@ -34,6 +34,8 @@ from .core.cmdpanel import (
     OverrideStore,
     collect_command_entries,
     collect_commands,
+    pick_panel_prefix,
+    select_panel_items,
 )
 from .core.errors import QQOfficeNotSupported, QQOfficeRoutingError
 from .core.events import (
@@ -395,10 +397,24 @@ class Main(Star):
 
     # ---------------- 指令面板页面 / Web API ----------------
 
+    def _wake_prefixes(self) -> list[str]:
+        """AstrBot 全局唤醒前缀（读取失败退回官方默认 ["/"]）。"""
+        try:
+            prefs = self.context.get_config().get("provider_settings", {}).get("wake_prefix")
+            if isinstance(prefs, list):
+                return prefs
+        except Exception:
+            pass
+        return ["/"]
+
+    def _panel_prefix(self) -> str:
+        """面板指令前缀：官方会剥离开头的 "/"，必须取实际唤醒前缀。"""
+        return pick_panel_prefix(self._wake_prefixes())
+
     def _collect_panel_commands(self) -> list[dict]:
-        """面板同步的指令来源：应用插件页面的逐指令开关覆盖表。"""
+        """面板同步的指令来源：应用页面开关覆盖表与实际唤醒前缀。"""
         disabled = self.overrides.disabled_set() if self.overrides else None
-        return collect_commands(disabled)
+        return collect_commands(disabled, self._panel_prefix())
 
     def _register_web_apis(self) -> None:
         register = getattr(self.context, "register_web_api", None)
@@ -413,19 +429,25 @@ class Main(Star):
 
     async def api_cmdpanel_overview(self):
         """全部指令按插件分组 + 同步状态；开关态来自 OverrideStore。"""
+        prefixes = self._wake_prefixes()
+        prefix = pick_panel_prefix(prefixes)
         try:
             entries = collect_command_entries(
-                self.overrides.disabled_set() if self.overrides else None
+                self.overrides.disabled_set() if self.overrides else None, prefix
             )
+            _, selected = select_panel_items(entries, prefix)
         except Exception as exc:
             return error_response(f"指令收集失败: {exc}", status_code=500)
         groups: dict[str, list] = {}
         for e in entries:
-            groups.setdefault(e["plugin"], []).append(
-                {k: e[k] for k in ("module", "name", "desc", "only_admin",
-                                   "is_alias", "panel_ok", "enabled")}
-            )
+            cmd = {k: e[k] for k in ("module", "name", "desc", "only_admin",
+                                     "is_alias", "panel_ok", "enabled")}
+            cmd["selected"] = f"{e['module']}:{e['name']}" in selected
+            groups.setdefault(e["plugin"], []).append(cmd)
         return json_response({
+            # 前缀为 "" 且配置不允许裸指令：官方剥离 "/" 后面板指令无法触发
+            "prefix": prefix,
+            "prefix_dead": bool(prefixes) and "" not in prefixes and not prefix,
             "groups": [
                 {"plugin": name,
                  "commands": sorted(cmds, key=lambda c: (c["is_alias"], c["name"]))}
