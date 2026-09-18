@@ -374,7 +374,8 @@ asyncio.run(star_wait_test())
 
 # ---------- cmdpanel（指令面板同步）----------
 from core.cmdpanel import (MARKER, CommandPanelSyncer, OverrideStore,
-                           build_panels, normalize_commands, visual_len)
+                           _admin_permission_types, build_panels,
+                           normalize_commands, visual_len)
 
 t("visual len ascii", visual_len("/help") == 5)
 t("visual len cjk", visual_len("/签到") == 5)
@@ -524,6 +525,20 @@ async def cmdpanel_sync_test():
     t("stop settles", syncer3._task is None)
 
 asyncio.run(cmdpanel_sync_test())
+
+# 版本兼容：v4.27 PermissionType 只有 ADMIN/MEMBER，不得抛 AttributeError
+class _OldPermissionType:
+    ADMIN = object()
+    MEMBER = object()
+
+class _NewPermissionType:
+    ADMIN = object()
+    MEMBER = object()
+    GROUP_ADMIN = object()
+    SHARED_GROUP_ADMIN = object()
+
+t("admin types old enum", _admin_permission_types(_OldPermissionType) == (_OldPermissionType.ADMIN,))
+t("admin types new enum", len(_admin_permission_types(_NewPermissionType)) == 3)
 
 # ---------- OverrideStore（指令开关覆盖表）----------
 with tempfile.TemporaryDirectory() as td:

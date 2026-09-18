@@ -117,11 +117,7 @@ def collect_command_entries(disabled: set | frozenset | None = None) -> list[dic
     from astrbot.core.star.star import star_map
     from astrbot.core.star.star_handler import star_handlers_registry
 
-    admin_types = (
-        PermissionType.ADMIN,
-        PermissionType.GROUP_ADMIN,
-        PermissionType.SHARED_GROUP_ADMIN,
-    )
+    admin_types = _admin_permission_types(PermissionType)
     disabled = disabled or frozenset()
     entries: list[dict] = []
     for handler_md in star_handlers_registry:
@@ -219,6 +215,14 @@ class OverrideStore:
         else:
             self._disabled.add(key)
         self.save()
+
+
+def _admin_permission_types(permission_type_cls) -> tuple:
+    """提取「管理员类」权限成员，兼容旧版枚举（v4.27 仅有 ADMIN/MEMBER）。"""
+    return tuple(
+        m for n in ("ADMIN", "GROUP_ADMIN", "SHARED_GROUP_ADMIN")
+        if (m := getattr(permission_type_cls, n, None)) is not None
+    )
 
 
 def _item_key(item: dict) -> tuple:
