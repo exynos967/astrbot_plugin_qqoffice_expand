@@ -966,6 +966,28 @@ async def test_main_scale():
             await svc.terminate()
 
 
+async def test_slash_wake():
+    """官方面板斜杠转译："/" 并入内存态唤醒前缀，幂等且可被配置关闭。"""
+    cfg = {"wake_prefix": ["#", "真寻"]}
+    ctx = NS(platform_manager=NS(_inst_map={}), get_config=lambda: cfg)
+    svc = M.Main(ctx, {"retry_max": 0})
+    await svc.initialize()
+    t("斜杠唤醒并入内存态", "/" in cfg["wake_prefix"])
+    svc._ensure_slash_wake()
+    t("斜杠唤醒幂等", cfg["wake_prefix"].count("/") == 1)
+    t("面板前缀固定斜杠", svc._panel_prefix() == "/")
+    await svc.terminate()
+    t("不写穿配置文件", cfg["wake_prefix"] is not None)   # 仅内存态
+
+    cfg2 = {"wake_prefix": ["#"]}
+    ctx2 = NS(platform_manager=NS(_inst_map={}), get_config=lambda: cfg2)
+    svc2 = M.Main(ctx2, {"retry_max": 0, "command_panel_sync": False})
+    await svc2.initialize()
+    t("同步关闭不转译", "/" not in cfg2["wake_prefix"])
+    t("关闭时退回实际前缀", svc2._panel_prefix() == "#")
+    await svc2.terminate()
+
+
 async def _main():
     t("on_platform_loaded 为异步钩子",
       inspect.iscoroutinefunction(M.Main._on_platform_loaded))
@@ -980,6 +1002,7 @@ async def _main():
     await test_ownership_and_hooks()
     await test_coordination_convergence()
     await test_main_scale()
+    await test_slash_wake()
     await test_ref_source_binding()
     await test_native_reference_ingest()
 

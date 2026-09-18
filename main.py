@@ -130,6 +130,7 @@ class Main(Star):
         self.cmdpanel = CommandPanelSyncer(
             self, collect=self._collect_panel_commands, logger=logger
         )
+        self._ensure_slash_wake()
         self._register_web_apis()
         self._coordinator = asyncio.create_task(self._coordinator_loop())
         self._ready_flag = True
@@ -223,6 +224,7 @@ class Main(Star):
         except Exception as exc:
             logger.error(f"[qqoffice_expand] 补丁差异应用失败: {exc!r}")
         self._prune_idle_states()
+        self._ensure_slash_wake()          # 配置热重载会丢内存态转译，周期兜底
         if self.cmdpanel is not None:
             self.cmdpanel.request_sync()   # 签名不变时零网络调用
 
@@ -412,8 +414,24 @@ class Main(Star):
             pass
         return ["/"]
 
+    def _ensure_slash_wake(self) -> None:
+        """官方客户端指令面板只认「/指令」形态：把 "/" 并入内存态唤醒前缀
+        （不写入用户配置文件），等效于把面板发回的 /xxx 转译成 AstrBot 指令。"""
+        if not self.config.get("command_panel_sync", True):
+            return
+        try:
+            prefs = self.context.get_config().get("wake_prefix")
+            if isinstance(prefs, list) and "/" not in prefs:
+                prefs.append("/")
+                logger.info('[qqoffice_expand] 已将 "/" 并入内存态唤醒前缀（面板指令转译）')
+        except Exception as exc:
+            logger.warning(f"[qqoffice_expand] 斜杠唤醒转译失败: {exc!r}")
+
     def _panel_prefix(self) -> str:
-        """面板指令前缀：官方会剥离开头的 "/"，必须取实际唤醒前缀。"""
+        """面板指令前缀：同步开启时固定 "/"（斜杠唤醒已转译）；关闭时退回
+        实际唤醒前缀选取。"""
+        if self.config.get("command_panel_sync", True):
+            return "/"
         return pick_panel_prefix(self._wake_prefixes())
 
     def _collect_panel_commands(self) -> list[dict]:
@@ -439,7 +457,7 @@ class Main(Star):
     async def api_cmdpanel_overview(self):
         """全部指令按插件分组 + 同步状态；开关态来自 OverrideStore。"""
         prefixes = self._wake_prefixes()
-        prefix = pick_panel_prefix(prefixes)
+        prefix = self._panel_prefix()
         try:
             entries = collect_command_entries(
                 self.overrides.disabled_set() if self.overrides else None, prefix
