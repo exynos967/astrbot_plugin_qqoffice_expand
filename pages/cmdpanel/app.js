@@ -42,6 +42,9 @@ function renderStatus() {
   if (!s.enabled) {
     parts.push(document.createTextNode("（总开关已关，请到插件配置开启 command_panel_sync）"));
   }
+  if (state.menu_only) {
+    parts.push(document.createTextNode(" · 菜单模式：面板仅注册「菜单」入口，全部指令在菜单卡片中展示"));
+  }
   if (state.prefix_dead) {
     parts.push(el("span", "off",
       " ⚠ 唤醒前缀仅含 /，QQ 会剥离开头的 /，面板指令将无法触发；请在 AstrBot 设置中把唤醒前缀加上 # 等符号"));
@@ -87,7 +90,7 @@ function buildRow(cmd) {
   if (cmd.is_alias) head.appendChild(el("span", "tag", "别名"));
   if (cmd.only_admin) head.appendChild(el("span", "tag tag-admin", "管理员"));
   if (!cmd.panel_ok) head.appendChild(el("span", "tag tag-wide", "超宽不注册"));
-  else if (cmd.enabled && !cmd.selected) head.appendChild(el("span", "tag tag-wide", "容量外"));
+  else if (!state.menu_only && cmd.enabled && !cmd.selected) head.appendChild(el("span", "tag tag-wide", "容量外"));
   info.appendChild(head);
   info.appendChild(el("div", "cmd-desc", cmd.desc || "（无描述）"));
   row.appendChild(info);

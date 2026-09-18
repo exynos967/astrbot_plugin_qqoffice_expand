@@ -19,6 +19,7 @@ import json
 import unicodedata
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 __all__ = [
     "MARKER",
@@ -29,6 +30,9 @@ __all__ = [
     "normalize_commands",
     "pick_panel_prefix",
     "select_panel_items",
+    "inline_cmd",
+    "build_menu_index",
+    "build_menu_plugin",
     "collect_commands",
     "collect_command_entries",
     "OverrideStore",
@@ -199,6 +203,48 @@ def build_panel(items: list[dict]) -> dict | None:
     if not items:
         return None
     return {"items": items, "remark": MARKER}
+
+
+# ---------------- 指令菜单卡片 ----------------
+
+def inline_cmd(label: str, command: str) -> str:
+    """QQ markdown 内联指令链接：点击 label 即以 command 为内容发送消息。"""
+    safe = label.replace("[", "【").replace("]", "】")
+    return (f"[{safe}](mqqapi://aio/inlinecmd?command={quote(command)}"
+            f"&reply=false&enter=true)")
+
+
+def _enabled_groups(entries: list[dict]) -> dict[str, list[dict]]:
+    groups: dict[str, list[dict]] = {}
+    for e in entries:
+        if e["enabled"]:
+            groups.setdefault(e["plugin"], []).append(e)
+    return groups
+
+
+def build_menu_index(entries: list[dict], prefix: str) -> str:
+    """菜单索引页：每个插件一行可点击链接（点击进入插件指令详情）。"""
+    groups = _enabled_groups(entries)
+    lines = ["**📋 指令菜单**", "点击插件名查看该插件的全部指令："]
+    for name in sorted(groups):
+        lines.append(f"{inline_cmd(name, f'{prefix}菜单 {name}')}（{len(groups[name])} 条）")
+    return "\n".join(lines)
+
+
+def build_menu_plugin(plugin: str, entries: list[dict], prefix: str) -> str | None:
+    """单插件指令详情页；插件不存在或无启用指令返回 None。"""
+    cmds = _enabled_groups(entries).get(plugin)
+    if not cmds:
+        return None
+    lines = [f"**—— {plugin} ——**"]
+    for e in sorted(cmds, key=lambda c: (c["is_alias"], c["name"])):
+        tag = "（管理员）" if e["only_admin"] else ""
+        lines.append(
+            f"{inline_cmd(prefix + e['name'], prefix + e['name'])}{tag}："
+            f"{e['desc'] or '无描述'}"
+        )
+    lines.append(inline_cmd("🔙 返回菜单", f"{prefix}菜单"))
+    return "\n".join(lines)
 
 
 class OverrideStore:

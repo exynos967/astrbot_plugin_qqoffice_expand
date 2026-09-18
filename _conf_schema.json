@@ -72,6 +72,12 @@
     "hint": "收集系统与所有已激活插件的指令（含别名），以「/指令名」形式同步到指令面板；指令集变化在 15 秒内自动收敛；关闭时自动摘除本插件托管的面板",
     "default": true
   },
+  "command_panel_menu_only": {
+    "type": "bool",
+    "description": "面板仅注册菜单入口",
+    "hint": "开启后面板只注册「菜单」一条指令，点击后发送可交互卡片浏览全部插件指令（绕开单面板 20 条上限）；关闭则按开关直接注册指令（最多 20 条）",
+    "default": true
+  },
   "command_panel_scopes": {
     "type": "list",
     "description": "指令面板生效场景",

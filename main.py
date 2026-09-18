@@ -29,11 +29,15 @@ from .api.manage import ManageAPI
 from .core import builders
 from .core.auth import ADAPTER_NAMES
 from .core.client import execute_call, send_rich_bound, upload_media_bound
+from .core.builders import md
 from .core.cmdpanel import (
     CommandPanelSyncer,
     OverrideStore,
+    build_menu_index,
+    build_menu_plugin,
     collect_command_entries,
     collect_commands,
+    normalize_commands,
     pick_panel_prefix,
     select_panel_items,
 )
@@ -413,9 +417,13 @@ class Main(Star):
         return pick_panel_prefix(self._wake_prefixes())
 
     def _collect_panel_commands(self) -> list[dict]:
-        """面板同步的指令来源：应用页面开关覆盖表与实际唤醒前缀。"""
+        """面板同步的指令来源：菜单模式仅注册「菜单」入口（官方单面板 20 项
+        硬限制的绕开方案）；否则按页面开关覆盖表全量注册。"""
+        prefix = self._panel_prefix()
+        if self.config.get("command_panel_menu_only", True):
+            return normalize_commands([("菜单", "打开指令菜单", False)], prefix)
         disabled = self.overrides.disabled_set() if self.overrides else None
-        return collect_commands(disabled, self._panel_prefix())
+        return collect_commands(disabled, prefix)
 
     def _register_web_apis(self) -> None:
         register = getattr(self.context, "register_web_api", None)
@@ -449,6 +457,7 @@ class Main(Star):
             # 前缀为 "" 且配置不允许裸指令：官方剥离 "/" 后面板指令无法触发
             "prefix": prefix,
             "prefix_dead": bool(prefixes) and "" not in prefixes and not prefix,
+            "menu_only": bool(self.config.get("command_panel_menu_only", True)),
             "groups": [
                 {"plugin": name,
                  "commands": sorted(cmds, key=lambda c: (c["is_alias"], c["name"]))}
@@ -478,6 +487,49 @@ class Main(Star):
             return error_response("插件尚未初始化完成", status_code=503)
         self.cmdpanel.force_sync()
         return json_response({"triggered": True})
+
+    @filter.command("菜单", alias={"menu"})
+    async def qqoffice_menu(self, event: AstrMessageEvent):
+        """指令菜单卡片：插件索引 → 单插件指令详情（蓝字点击直接触发）。"""
+        prefix = self._panel_prefix()
+        disabled = self.overrides.disabled_set() if self.overrides else None
+        try:
+            entries = collect_command_entries(disabled, prefix)
+        except Exception as exc:
+            yield event.plain_result(f"指令菜单构建失败: {exc}")
+            return
+        # 手动剥离唤醒前缀与指令名，剩余部分作为插件名查询（插件名可含空格）
+        text = (event.message_str or "").strip()
+        for pfx in (*self._wake_prefixes(), "/"):
+            if pfx and text.startswith(pfx):
+                text = text[len(pfx):]
+                break
+        for cmd in ("菜单", "menu"):
+            if text.startswith(cmd):
+                text = text[len(cmd):].strip()
+                break
+        plugins = sorted({e["plugin"] for e in entries if e["enabled"]})
+        if text:
+            target = next((p for p in plugins if p.lower() == text.lower()), None)
+            if target is None and text.isdigit():
+                idx = int(text) - 1
+                target = plugins[idx] if 0 <= idx < len(plugins) else None
+            content = build_menu_plugin(target, entries, prefix) if target else None
+            if content is None:
+                yield event.plain_result(
+                    f"没有找到插件「{text}」，发送 {prefix or '/'}菜单 查看插件列表"
+                )
+                return
+        else:
+            content = build_menu_index(entries, prefix)
+        try:
+            await self.for_event(event).send_rich(markdown=md(content))
+        except Exception as exc:
+            logger.warning(f"[qqoffice_expand] 菜单卡片发送失败，降级纯文本: {exc!r}")
+            import re as _re
+            yield event.plain_result(
+                _re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", content)
+            )
 
     @filter.command("qqoffice_status")
     async def qqoffice_status(self, event: AstrMessageEvent):

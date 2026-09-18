@@ -374,7 +374,8 @@ asyncio.run(star_wait_test())
 
 # ---------- cmdpanel（指令面板同步）----------
 from core.cmdpanel import (MARKER, CommandPanelSyncer, OverrideStore,
-                           _admin_permission_types, build_panel,
+                           _admin_permission_types, build_menu_index,
+                           build_menu_plugin, build_panel, inline_cmd,
                            normalize_commands, pick_panel_prefix,
                            select_panel_items, visual_len)
 
@@ -420,6 +421,26 @@ _sel2, _keys2 = select_panel_items([_entry(f"c{i:02d}") for i in range(25)], "#"
 t("select cap 20", len(_sel2) == 20 and len(_keys2) == 20)
 t("build panel marker", build_panel(_sel2)["remark"] == MARKER)
 t("build panel empty", build_panel([]) is None)
+
+# 菜单卡片构建器
+_link = inline_cmd("帮助", "#help")
+t("inline cmd link", _link == "[帮助](mqqapi://aio/inlinecmd?command=%23help&reply=false&enter=true)")
+t("inline cmd bracket safe", "[a【b](" in inline_cmd("a[b", "#x"))
+_menu_entries = [
+    {"plugin": "插件B", "module": "mB", "name": "cmd1", "desc": "功能一",
+     "only_admin": False, "is_alias": False, "enabled": True, "panel_ok": True},
+    {"plugin": "插件A", "module": "mA", "name": "cmd2", "desc": "",
+     "only_admin": True, "is_alias": False, "enabled": True, "panel_ok": True},
+    {"plugin": "插件A", "module": "mA", "name": "off", "desc": "x",
+     "only_admin": False, "is_alias": False, "enabled": False, "panel_ok": True},
+]
+_idx = build_menu_index(_menu_entries, "#")
+t("menu index groups", "插件A" in _idx and "插件B" in _idx and "off" not in _idx)
+t("menu index drill link", "%23%E8%8F%9C%E5%8D%95%20%E6%8F%92%E4%BB%B6A" in _idx)
+_detail = build_menu_plugin("插件A", _menu_entries, "#")
+t("menu plugin detail", "#cmd2" in _detail and "（管理员）" in _detail and "off" not in _detail)
+t("menu plugin back link", "返回菜单" in _detail)
+t("menu plugin missing", build_menu_plugin("不存在", _menu_entries, "#") is None)
 
 
 class _FakeManage:
