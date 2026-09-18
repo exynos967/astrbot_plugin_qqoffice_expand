@@ -441,7 +441,8 @@ class Main(Star):
         if self.config.get("command_panel_menu_only", True):
             return normalize_commands([("菜单", "打开指令菜单", False)], prefix)
         disabled = self.overrides.disabled_set() if self.overrides else None
-        return collect_commands(disabled, prefix)
+        disabled_plugins = self.overrides.disabled_plugins() if self.overrides else None
+        return collect_commands(disabled, prefix, disabled_plugins)
 
     def _register_web_apis(self) -> None:
         register = getattr(self.context, "register_web_api", None)
@@ -460,41 +461,51 @@ class Main(Star):
         prefix = self._panel_prefix()
         try:
             entries = collect_command_entries(
-                self.overrides.disabled_set() if self.overrides else None, prefix
+                self.overrides.disabled_set() if self.overrides else None,
+                prefix,
+                self.overrides.disabled_plugins() if self.overrides else None,
             )
             _, selected = select_panel_items(entries, prefix)
         except Exception as exc:
             return error_response(f"指令收集失败: {exc}", status_code=500)
         groups: dict[str, list] = {}
         for e in entries:
-            cmd = {k: e[k] for k in ("module", "name", "desc", "only_admin",
-                                     "is_alias", "panel_ok", "enabled")}
-            cmd["selected"] = f"{e['module']}:{e['name']}" in selected
-            groups.setdefault(e["plugin"], []).append(cmd)
+            groups.setdefault(e["plugin"], []).append(e)
+        group_list = [
+            {"plugin": name,
+             "module": cmds[0]["module"],
+             "enabled": cmds[0]["plugin_enabled"],
+             "commands": [
+                 {**{k: c[k] for k in ("module", "name", "desc", "only_admin",
+                                       "is_alias", "panel_ok", "enabled")},
+                  "selected": f"{c['module']}:{c['name']}" in selected}
+                 for c in sorted(cmds, key=lambda c: (c["is_alias"], c["name"]))
+             ]}
+            for name, cmds in sorted(groups.items())
+        ]
         return json_response({
             # 前缀为 "" 且配置不允许裸指令：官方剥离 "/" 后面板指令无法触发
             "prefix": prefix,
             "prefix_dead": bool(prefixes) and "" not in prefixes and not prefix,
             "menu_only": bool(self.config.get("command_panel_menu_only", True)),
-            "groups": [
-                {"plugin": name,
-                 "commands": sorted(cmds, key=lambda c: (c["is_alias"], c["name"]))}
-                for name, cmds in sorted(groups.items())
-            ],
+            "groups": group_list,
             "sync": self.cmdpanel.status() if self.cmdpanel else {},
         })
 
     async def api_cmdpanel_toggle(self):
-        """切换单条指令开关：持久化覆盖表并触发面板重同步。"""
+        """切换开关：带 name 为单条指令，name 为空为插件总开关。"""
         payload = await request.json(default={})
         module = str(payload.get("module") or "")
         name = str(payload.get("name") or "")
         enabled = payload.get("enabled")
-        if not module or not name or not isinstance(enabled, bool):
-            return error_response("module/name/enabled 参数不合法")
+        if not module or not isinstance(enabled, bool):
+            return error_response("module/enabled 参数不合法")
         if self.overrides is None:
             return error_response("插件尚未初始化完成", status_code=503)
-        self.overrides.set_enabled(f"{module}:{name}", enabled)
+        if name:
+            self.overrides.set_enabled(f"{module}:{name}", enabled)
+        else:
+            self.overrides.set_plugin_enabled(module, enabled)
         if self.cmdpanel is not None:
             self.cmdpanel.force_sync()
         return json_response({"saved": True, "enabled": enabled})
@@ -511,8 +522,9 @@ class Main(Star):
         """指令菜单卡片：插件索引 → 单插件指令详情（蓝字点击直接触发）。"""
         prefix = self._panel_prefix()
         disabled = self.overrides.disabled_set() if self.overrides else None
+        disabled_plugins = self.overrides.disabled_plugins() if self.overrides else None
         try:
-            entries = collect_command_entries(disabled, prefix)
+            entries = collect_command_entries(disabled, prefix, disabled_plugins)
         except Exception as exc:
             yield event.plain_result(f"指令菜单构建失败: {exc}")
             return

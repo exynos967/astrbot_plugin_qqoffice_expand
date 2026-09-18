@@ -597,4 +597,19 @@ mem = OverrideStore(None)
 mem.set_enabled("m:c", False)
 t("override memory-only ok", mem.disabled_set() == frozenset({"m:c"}))
 
+# 插件总开关：@module 键与指令键共存、互不污染
+mem.set_plugin_enabled("mod.b", False)
+t("plugin disable", mem.disabled_plugins() == frozenset({"mod.b"}))
+t("plugin key not in commands", mem.disabled_set() == frozenset({"m:c"}))
+with tempfile.TemporaryDirectory() as td:
+    s = OverrideStore(td)
+    s.set_plugin_enabled("mod.x", False)
+    s.set_enabled("mod.x:cmd", False)
+    s2 = OverrideStore(td)
+    t("plugin+persist reload", s2.disabled_plugins() == frozenset({"mod.x"})
+      and s2.disabled_set() == frozenset({"mod.x:cmd"}))
+    s2.set_plugin_enabled("mod.x", True)
+    t("plugin re-enable keeps cmd", s2.disabled_plugins() == frozenset()
+      and s2.disabled_set() == frozenset({"mod.x:cmd"}))
+
 print(f"\nALL {ok} CHECKS PASSED")

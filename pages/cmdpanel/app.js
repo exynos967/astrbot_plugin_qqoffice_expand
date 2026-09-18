@@ -52,13 +52,14 @@ function renderStatus() {
   for (const node of parts) statusEl.appendChild(node);
 }
 
-function buildSwitch(cmd) {
+function buildSwitch(cmd, groupOn) {
   const label = el("label", "switch");
   const input = document.createElement("input");
   input.type = "checkbox";
   input.checked = !!cmd.enabled;
-  input.disabled = !cmd.panel_ok;
+  input.disabled = !cmd.panel_ok || !groupOn;
   if (!cmd.panel_ok) input.title = "名称超宽，无法注册到面板";
+  else if (!groupOn) input.title = "插件总开关已关闭";
   const slider = el("span", "slider");
   label.appendChild(input);
   label.appendChild(slider);
@@ -82,8 +83,8 @@ function buildSwitch(cmd) {
   return label;
 }
 
-function buildRow(cmd) {
-  const row = el("div", "cmd-row" + (cmd.enabled ? "" : " dim"));
+function buildRow(cmd, groupOn) {
+  const row = el("div", "cmd-row" + (cmd.enabled && groupOn ? "" : " dim"));
   const info = el("div", "cmd-info");
   const head = el("div", "cmd-head");
   head.appendChild(el("code", "cmd-name", (state.prefix ?? "/") + cmd.name));
@@ -94,8 +95,37 @@ function buildRow(cmd) {
   info.appendChild(head);
   info.appendChild(el("div", "cmd-desc", cmd.desc || "（无描述）"));
   row.appendChild(info);
-  row.appendChild(buildSwitch(cmd));
+  row.appendChild(buildSwitch(cmd, groupOn));
   return row;
+}
+
+function buildGroupSwitch(group) {
+  const label = el("label", "switch");
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = !!group.enabled;
+  input.title = "插件总开关：关闭后面板与菜单卡片都不再展示该插件";
+  const slider = el("span", "slider");
+  label.appendChild(input);
+  label.appendChild(slider);
+  input.addEventListener("change", async () => {
+    input.disabled = true;
+    try {
+      await bridge.apiPost("cmdpanel/toggle", {
+        module: group.module,
+        name: "",
+        enabled: input.checked,
+      });
+      toast((input.checked ? "已开启「" : "已关闭「") + group.plugin + "」全部指令");
+      await load();   // 指令开关是 插件开∧指令开 的合成态，以服务端重算为准
+    } catch (err) {
+      input.checked = !input.checked;
+      toast("保存失败：" + err.message, true);
+    } finally {
+      input.disabled = false;
+    }
+  });
+  return label;
 }
 
 function matches(cmd, kw) {
@@ -119,11 +149,13 @@ function render() {
     header.appendChild(el("span", "group-line"));
     header.appendChild(el("span", "group-name", group.plugin));
     const onCount = cmds.filter((c) => c.selected).length;
-    header.appendChild(el("span", "group-count", onCount + "/" + cmds.length + " 上面板"));
+    header.appendChild(el("span", "group-count",
+      group.enabled ? onCount + "/" + cmds.length + " 上面板" : "已关闭"));
     header.appendChild(el("span", "group-line"));
+    header.appendChild(buildGroupSwitch(group));
     section.appendChild(header);
     const list = el("div", "cmd-list");
-    for (const cmd of cmds) list.appendChild(buildRow(cmd));
+    for (const cmd of cmds) list.appendChild(buildRow(cmd, !!group.enabled));
     section.appendChild(list);
     groupsEl.appendChild(section);
   }
