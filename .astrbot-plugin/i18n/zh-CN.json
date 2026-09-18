@@ -1,0 +1,8 @@
+{
+  "pages": {
+    "cmdpanel": {
+      "title": "指令面板注册",
+      "description": "按插件分类管理自动注册到 QQ 指令面板的指令开关"
+    }
+  }
+}

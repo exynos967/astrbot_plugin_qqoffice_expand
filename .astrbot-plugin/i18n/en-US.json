@@ -1,0 +1,8 @@
+{
+  "pages": {
+    "cmdpanel": {
+      "title": "Command Panel Registration",
+      "description": "Manage per-command registration switches for the QQ command panel, grouped by plugin"
+    }
+  }
+}

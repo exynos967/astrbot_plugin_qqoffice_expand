@@ -20,6 +20,7 @@ from typing import Callable
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
+from astrbot.api.web import error_response, json_response, request
 
 from .api.c2c import C2CAPI
 from .api.group import GroupAPI
@@ -28,7 +29,12 @@ from .api.manage import ManageAPI
 from .core import builders
 from .core.auth import ADAPTER_NAMES
 from .core.client import execute_call, send_rich_bound, upload_media_bound
-from .core.cmdpanel import CommandPanelSyncer
+from .core.cmdpanel import (
+    CommandPanelSyncer,
+    OverrideStore,
+    collect_command_entries,
+    collect_commands,
+)
 from .core.errors import QQOfficeNotSupported, QQOfficeRoutingError
 from .core.events import (
     EVENT_ID_SCOPES,
@@ -66,6 +72,7 @@ class Main(Star):
         self.routes: RouteCore | None = None
         self.states: RobotStates | None = None
         self.cmdpanel: CommandPanelSyncer | None = None
+        self.overrides: OverrideStore | None = None
 
         # 能力目录只构建一次：命名空间类上的未绑定函数（视图调用时以自身
         # 命名空间为 self，保留 helper/_scene；见 BoundView._ns）。
@@ -113,7 +120,11 @@ class Main(Star):
         self.event_bus.bind_routes(self.routes)
 
         self.patcher.refresh()          # 已在运行的实例立即挂载（含热安装重载）
-        self.cmdpanel = CommandPanelSyncer(self, logger=logger)
+        self.overrides = OverrideStore(data_dir)
+        self.cmdpanel = CommandPanelSyncer(
+            self, collect=self._collect_panel_commands, logger=logger
+        )
+        self._register_web_apis()
         self._coordinator = asyncio.create_task(self._coordinator_loop())
         self._ready_flag = True
         logger.info(
@@ -381,6 +392,69 @@ class Main(Star):
                 f"已同步={cp['synced']} 最近: {cp['last_result'] or '-'}"
             )
         return "\n".join(lines)
+
+    # ---------------- 指令面板页面 / Web API ----------------
+
+    def _collect_panel_commands(self) -> list[dict]:
+        """面板同步的指令来源：应用插件页面的逐指令开关覆盖表。"""
+        disabled = self.overrides.disabled_set() if self.overrides else None
+        return collect_commands(disabled)
+
+    def _register_web_apis(self) -> None:
+        register = getattr(self.context, "register_web_api", None)
+        if register is None:
+            return   # 离线装配测试桩无此方法
+        register(f"/{PLUGIN_NAME}/cmdpanel/overview", self.api_cmdpanel_overview,
+                 ["GET"], "指令面板注册总览（按插件分组）")
+        register(f"/{PLUGIN_NAME}/cmdpanel/toggle", self.api_cmdpanel_toggle,
+                 ["POST"], "切换单条指令的注册开关")
+        register(f"/{PLUGIN_NAME}/cmdpanel/sync", self.api_cmdpanel_sync,
+                 ["POST"], "强制全量比对并同步指令面板")
+
+    async def api_cmdpanel_overview(self):
+        """全部指令按插件分组 + 同步状态；开关态来自 OverrideStore。"""
+        try:
+            entries = collect_command_entries(
+                self.overrides.disabled_set() if self.overrides else None
+            )
+        except Exception as exc:
+            return error_response(f"指令收集失败: {exc}", status_code=500)
+        groups: dict[str, list] = {}
+        for e in entries:
+            groups.setdefault(e["plugin"], []).append(
+                {k: e[k] for k in ("module", "name", "desc", "only_admin",
+                                   "is_alias", "panel_ok", "enabled")}
+            )
+        return json_response({
+            "groups": [
+                {"plugin": name,
+                 "commands": sorted(cmds, key=lambda c: (c["is_alias"], c["name"]))}
+                for name, cmds in sorted(groups.items())
+            ],
+            "sync": self.cmdpanel.status() if self.cmdpanel else {},
+        })
+
+    async def api_cmdpanel_toggle(self):
+        """切换单条指令开关：持久化覆盖表并触发面板重同步。"""
+        payload = await request.json(default={})
+        module = str(payload.get("module") or "")
+        name = str(payload.get("name") or "")
+        enabled = payload.get("enabled")
+        if not module or not name or not isinstance(enabled, bool):
+            return error_response("module/name/enabled 参数不合法")
+        if self.overrides is None:
+            return error_response("插件尚未初始化完成", status_code=503)
+        self.overrides.set_enabled(f"{module}:{name}", enabled)
+        if self.cmdpanel is not None:
+            self.cmdpanel.force_sync()
+        return json_response({"saved": True, "enabled": enabled})
+
+    async def api_cmdpanel_sync(self):
+        """手动触发一次全量比对（后台执行）。"""
+        if self.cmdpanel is None:
+            return error_response("插件尚未初始化完成", status_code=503)
+        self.cmdpanel.force_sync()
+        return json_response({"triggered": True})
 
     @filter.command("qqoffice_status")
     async def qqoffice_status(self, event: AstrMessageEvent):

@@ -41,9 +41,14 @@ class _Star:
 
 _star.Star, _star.Context = _Star, object
 _star.StarTools = NS(get_data_dir=lambda *a: None)
+_web = types.ModuleType("astrbot.api.web")
+_web.request = None
+_web.json_response = lambda data=None, **kw: data
+_web.error_response = lambda message, **kw: {"status": "error", "message": message}
 sys.modules.update({
     "astrbot": types.ModuleType("astrbot"), "astrbot.api": _api,
     "astrbot.api.event": _event, "astrbot.api.star": _star,
+    "astrbot.api.web": _web,
 })
 _package = types.ModuleType("qqoffice_main_test")
 _package.__path__ = [str(ROOT)]

@@ -373,8 +373,8 @@ asyncio.run(star_wait_test())
 
 
 # ---------- cmdpanel（指令面板同步）----------
-from core.cmdpanel import (MARKER, CommandPanelSyncer, build_panels,
-                           normalize_commands, visual_len)
+from core.cmdpanel import (MARKER, CommandPanelSyncer, OverrideStore,
+                           build_panels, normalize_commands, visual_len)
 
 t("visual len ascii", visual_len("/help") == 5)
 t("visual len cjk", visual_len("/签到") == 5)
@@ -524,5 +524,22 @@ async def cmdpanel_sync_test():
     t("stop settles", syncer3._task is None)
 
 asyncio.run(cmdpanel_sync_test())
+
+# ---------- OverrideStore（指令开关覆盖表）----------
+with tempfile.TemporaryDirectory() as td:
+    store = OverrideStore(td)
+    t("override empty", store.disabled_set() == frozenset())
+    store.set_enabled("mod.a:help", False)
+    store.set_enabled("mod.b:set", False)
+    t("override disabled set", store.disabled_set() == frozenset({"mod.a:help", "mod.b:set"}))
+    store2 = OverrideStore(td)
+    t("override persisted reload", store2.disabled_set() == frozenset({"mod.a:help", "mod.b:set"}))
+    store2.set_enabled("mod.a:help", True)
+    t("override re-enable", store2.disabled_set() == frozenset({"mod.b:set"}))
+    Path(td, OverrideStore.FILE_NAME).write_text("not json", encoding="utf-8")
+    t("override corrupt tolerated", OverrideStore(td).disabled_set() == frozenset())
+mem = OverrideStore(None)
+mem.set_enabled("m:c", False)
+t("override memory-only ok", mem.disabled_set() == frozenset({"m:c"}))
 
 print(f"\nALL {ok} CHECKS PASSED")

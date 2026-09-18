@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>指令面板注册</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="title-wrap">
+        <h1 id="page-title">指令面板注册</h1>
+        <p class="subtitle">开关变更会持久化并自动同步到 QQ 指令面板</p>
+      </div>
+      <div class="actions">
+        <input id="search" type="search" placeholder="搜索指令 / 插件…" />
+        <button id="sync-btn" class="btn" type="button">立即同步</button>
+      </div>
+    </header>
+    <section id="sync-status" class="sync-status"></section>
+    <main id="groups"></main>
+    <div id="toast" class="toast" hidden></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

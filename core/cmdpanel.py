@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import unicodedata
+from pathlib import Path
 from typing import Any, Callable
 
 __all__ = [
@@ -27,6 +29,8 @@ __all__ = [
     "normalize_commands",
     "build_panels",
     "collect_commands",
+    "collect_command_entries",
+    "OverrideStore",
     "CommandPanelSyncer",
 ]
 
@@ -94,8 +98,12 @@ def build_panels(items: list[dict]) -> list[dict]:
     ]
 
 
-def collect_commands() -> list[dict]:
-    """从 AstrBot 指令注册表收集系统与已激活插件指令（含别名）。
+def collect_command_entries(disabled: set | frozenset | None = None) -> list[dict]:
+    """收集系统与已激活插件的全部指令条目（含插件归属与开关态）。
+
+    页面展示与面板同步共用的单一事实来源；disabled 为 "module:指令名"
+    键集合（见 OverrideStore.disabled_set）。条目字段：plugin/module/name/
+    desc/only_admin/is_alias/panel_ok/enabled。
 
     与 telegram 适配器 collect_commands 同策略：跳过未激活/停用处理器与子指令；
     指令组登记组名；带管理员权限过滤器的指令标记 only_admin。
@@ -114,28 +122,103 @@ def collect_commands() -> list[dict]:
         PermissionType.GROUP_ADMIN,
         PermissionType.SHARED_GROUP_ADMIN,
     )
-    raw: dict[str, tuple[str, bool]] = {}
+    disabled = disabled or frozenset()
+    entries: list[dict] = []
     for handler_md in star_handlers_registry:
-        meta = star_map.get(handler_md.handler_module_path)
+        module = handler_md.handler_module_path
+        meta = star_map.get(module)
         if meta is None or not meta.activated or not handler_md.enabled:
             continue
         only_admin = any(
             isinstance(f, PermissionTypeFilter) and f.permission_type in admin_types
             for f in handler_md.event_filters
         )
+        plugin = meta.display_name or meta.name or module
         desc = handler_md.desc or ""
         for f in handler_md.event_filters:
             if isinstance(f, CommandFilter) and f.command_name:
                 if f.parent_command_names and f.parent_command_names != [""]:
                     continue   # 子指令不单独占面板位（同 telegram/discord）
-                names = [f.command_name, *sorted(f.alias)]
+                names = [(f.command_name, False)] + [(a, True) for a in sorted(f.alias)]
             elif isinstance(f, CommandGroupFilter) and not f.parent_group:
-                names = [f.group_name]
+                names = [(f.group_name, False)]
             else:
                 continue
-            for name in names:
-                raw.setdefault(name, (desc, only_admin))
-    return normalize_commands([(n, d, a) for n, (d, a) in raw.items()])
+            for name, is_alias in names:
+                if not name or any(ch.isspace() for ch in name):
+                    continue
+                entries.append({
+                    "plugin": plugin,
+                    "module": module,
+                    "name": name,
+                    "desc": desc,
+                    "only_admin": only_admin,
+                    "is_alias": is_alias,
+                    "panel_ok": visual_len(f"/{name}") <= NAME_WIDTH_LIMIT,
+                    "enabled": f"{module}:{name}" not in disabled,
+                })
+    return entries
+
+
+def collect_commands(disabled: set | frozenset | None = None) -> list[dict]:
+    """收集应注册到指令面板的指令：启用且符合官方约束，同名先去重。"""
+    raw: list[tuple[str, str, bool]] = []
+    seen: set[str] = set()
+    for e in collect_command_entries(disabled):
+        if not e["enabled"] or not e["panel_ok"] or e["name"] in seen:
+            continue
+        seen.add(e["name"])
+        raw.append((e["name"], e["desc"], e["only_admin"]))
+    return normalize_commands(raw)
+
+
+class OverrideStore:
+    """指令开关覆盖表：data_dir 下 JSON 持久化。
+
+    只记录被关闭的指令（键 "module:指令名"，缺省启用）；文件不存在或损坏
+    时按空表处理，落盘失败不影响内存态（下次变更重试）。
+    """
+
+    FILE_NAME = "cmdpanel_overrides.json"
+
+    def __init__(self, data_dir=None):
+        self._path = Path(data_dir) / self.FILE_NAME if data_dir else None
+        self._disabled: set[str] = set()
+        self.load()
+
+    def load(self) -> None:
+        self._disabled = set()
+        if self._path is None or not self._path.exists():
+            return
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                self._disabled = {str(k) for k, v in data.items() if v is False}
+        except Exception:
+            self._disabled = set()
+
+    def save(self) -> None:
+        if self._path is None:
+            return
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {k: False for k in sorted(self._disabled)}
+            tmp = self._path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
+                           encoding="utf-8")
+            tmp.replace(self._path)
+        except Exception:
+            pass
+
+    def disabled_set(self) -> frozenset:
+        return frozenset(self._disabled)
+
+    def set_enabled(self, key: str, enabled: bool) -> None:
+        if enabled:
+            self._disabled.discard(key)
+        else:
+            self._disabled.add(key)
+        self.save()
 
 
 def _item_key(item: dict) -> tuple:
