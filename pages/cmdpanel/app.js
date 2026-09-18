@@ -99,24 +99,28 @@ function buildRow(cmd, groupOn) {
   return row;
 }
 
-function buildGroupSwitch(group) {
+function buildGroupSwitch(group, target, text, desc) {
+  const wrap = el("span", "group-switch");
+  wrap.title = desc;
+  wrap.appendChild(el("span", "group-switch-label", text));
   const label = el("label", "switch");
   const input = document.createElement("input");
   input.type = "checkbox";
-  input.checked = !!group.enabled;
-  input.title = "插件总开关：关闭后面板与菜单卡片都不再展示该插件";
+  input.checked = target === "card" ? !!group.card_enabled : !!group.panel_enabled;
   const slider = el("span", "slider");
   label.appendChild(input);
   label.appendChild(slider);
+  wrap.appendChild(label);
   input.addEventListener("change", async () => {
     input.disabled = true;
     try {
       await bridge.apiPost("cmdpanel/toggle", {
         module: group.module,
         name: "",
+        target,
         enabled: input.checked,
       });
-      toast((input.checked ? "已开启「" : "已关闭「") + group.plugin + "」全部指令");
+      toast((input.checked ? "已开启「" : "已关闭「") + group.plugin + "」的" + text);
       await load();   // 指令开关是 插件开∧指令开 的合成态，以服务端重算为准
     } catch (err) {
       input.checked = !input.checked;
@@ -125,7 +129,7 @@ function buildGroupSwitch(group) {
       input.disabled = false;
     }
   });
-  return label;
+  return wrap;
 }
 
 function matches(cmd, kw) {
@@ -150,12 +154,15 @@ function render() {
     header.appendChild(el("span", "group-name", group.plugin));
     const onCount = cmds.filter((c) => c.selected).length;
     header.appendChild(el("span", "group-count",
-      group.enabled ? onCount + "/" + cmds.length + " 上面板" : "已关闭"));
+      group.panel_enabled ? onCount + "/" + cmds.length + " 上面板" : "面板已关闭"));
     header.appendChild(el("span", "group-line"));
-    header.appendChild(buildGroupSwitch(group));
+    header.appendChild(buildGroupSwitch(group, "panel", "面板",
+      "面板注册开关：关闭后该插件的指令不注册到 QQ 指令面板（菜单卡片不受影响）"));
+    header.appendChild(buildGroupSwitch(group, "card", "卡片",
+      "卡片显示开关：关闭后该插件不出现在「菜单」卡片消息中（面板注册不受影响）"));
     section.appendChild(header);
     const list = el("div", "cmd-list");
-    for (const cmd of cmds) list.appendChild(buildRow(cmd, !!group.enabled));
+    for (const cmd of cmds) list.appendChild(buildRow(cmd, !!group.panel_enabled));
     section.appendChild(list);
     groupsEl.appendChild(section);
   }

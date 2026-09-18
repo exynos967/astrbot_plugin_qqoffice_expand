@@ -112,7 +112,8 @@ def select_panel_items(entries: list[dict], prefix: str = "/") -> tuple[list[dic
     入选条目的 "module:指令名" 键集合)（键集合供页面标记未入选指令）。
     """
     ordered = sorted(
-        (e for e in entries if e["enabled"]),
+        (e for e in entries
+         if e["enabled"] and e.get("panel_enabled", True)),
         key=lambda e: (e["is_alias"], e["name"]),
     )
     chosen: list[dict] = []
@@ -134,12 +135,14 @@ def select_panel_items(entries: list[dict], prefix: str = "/") -> tuple[list[dic
 
 def collect_command_entries(disabled: set | frozenset | None = None,
                             prefix: str = "/",
-                            disabled_plugins: set | frozenset | None = None) -> list[dict]:
+                            panel_off: set | frozenset | None = None,
+                            card_off: set | frozenset | None = None) -> list[dict]:
     """收集系统与已激活插件的全部指令条目（含插件归属与开关态）。
 
-    页面展示与面板同步共用的单一事实来源；disabled 为 "module:指令名"
-    键集合、disabled_plugins 为插件模块集合（见 OverrideStore）。条目字段：
-    plugin/module/name/desc/only_admin/is_alias/panel_ok/enabled/plugin_enabled。
+    页面展示与面板同步共用的单一事实来源；disabled 为 "module:指令名" 键集合，
+    panel_off/card_off 为插件模块集合（见 OverrideStore）。条目字段：
+    plugin/module/name/desc/only_admin/is_alias/panel_ok/enabled/
+    panel_enabled/card_enabled；enabled 为逐指令开关态（不含插件维度）。
     panel_ok 按实际唤醒前缀判宽。
 
     与 telegram 适配器 collect_commands 同策略：跳过未激活/停用处理器与子指令；
@@ -156,7 +159,8 @@ def collect_command_entries(disabled: set | frozenset | None = None,
 
     admin_types = _admin_permission_types(PermissionType)
     disabled = disabled or frozenset()
-    disabled_plugins = disabled_plugins or frozenset()
+    panel_off = panel_off or frozenset()
+    card_off = card_off or frozenset()
     entries: list[dict] = []
     for handler_md in star_handlers_registry:
         module = handler_md.handler_module_path
@@ -178,7 +182,6 @@ def collect_command_entries(disabled: set | frozenset | None = None,
                 names = [(f.group_name, False)]
             else:
                 continue
-            plugin_on = module not in disabled_plugins
             for name, is_alias in names:
                 if not name or any(ch.isspace() for ch in name):
                     continue
@@ -190,18 +193,19 @@ def collect_command_entries(disabled: set | frozenset | None = None,
                     "only_admin": only_admin,
                     "is_alias": is_alias,
                     "panel_ok": visual_len(f"{prefix}{name}") <= NAME_WIDTH_LIMIT,
-                    "plugin_enabled": plugin_on,
-                    "enabled": plugin_on and f"{module}:{name}" not in disabled,
+                    "panel_enabled": module not in panel_off,
+                    "card_enabled": module not in card_off,
+                    "enabled": f"{module}:{name}" not in disabled,
                 })
     return entries
 
 
 def collect_commands(disabled: set | frozenset | None = None,
                      prefix: str = "/",
-                     disabled_plugins: set | frozenset | None = None) -> list[dict]:
+                     panel_off: set | frozenset | None = None) -> list[dict]:
     """收集应注册到指令面板的指令（≤20，主指令优先，启用且合规）。"""
     items, _ = select_panel_items(
-        collect_command_entries(disabled, prefix, disabled_plugins), prefix
+        collect_command_entries(disabled, prefix, panel_off=panel_off), prefix
     )
     return items
 
@@ -223,9 +227,10 @@ def inline_cmd(label: str, command: str) -> str:
 
 
 def _enabled_groups(entries: list[dict]) -> dict[str, list[dict]]:
+    """菜单卡片维度：逐指令开关开 ∧ 插件卡片开关开。"""
     groups: dict[str, list[dict]] = {}
     for e in entries:
-        if e["enabled"]:
+        if e["enabled"] and e.get("card_enabled", True):
             groups.setdefault(e["plugin"], []).append(e)
     return groups
 
@@ -258,8 +263,9 @@ def build_menu_plugin(plugin: str, entries: list[dict], prefix: str) -> str | No
 class OverrideStore:
     """指令/插件开关覆盖表：data_dir 下 JSON 持久化。
 
-    只记录被关闭的项（指令键 "module:指令名"，插件总开关键 "@module"，
-    缺省启用）；文件不存在或损坏时按空表处理，落盘失败不影响内存态。
+    只记录被关闭的项（指令键 "module:指令名"，插件面板开关键 "@module"，
+    插件卡片开关键 "#module"，缺省启用）；文件不存在或损坏时按空表处理，
+    落盘失败不影响内存态。
     """
 
     FILE_NAME = "cmdpanel_overrides.json"
@@ -293,13 +299,24 @@ class OverrideStore:
         except Exception:
             pass
 
-    def disabled_set(self) -> frozenset:
-        """被关闭的指令键集合（不含插件总开关键）。"""
-        return frozenset(k for k in self._disabled if not k.startswith("@"))
+    def _plugin_keys(self, mark: str) -> frozenset:
+        return frozenset(
+            k[1:] for k in self._disabled if k.startswith(mark)
+        )
 
-    def disabled_plugins(self) -> frozenset:
-        """被关闭的插件模块集合。"""
-        return frozenset(k[1:] for k in self._disabled if k.startswith("@"))
+    def disabled_set(self) -> frozenset:
+        """被关闭的指令键集合（不含插件开关键）。"""
+        return frozenset(
+            k for k in self._disabled if not k.startswith(("@", "#"))
+        )
+
+    def disabled_panel_plugins(self) -> frozenset:
+        """面板注册被关闭的插件模块集合。"""
+        return self._plugin_keys("@")
+
+    def disabled_card_plugins(self) -> frozenset:
+        """菜单卡片展示被关闭的插件模块集合。"""
+        return self._plugin_keys("#")
 
     def set_enabled(self, key: str, enabled: bool) -> None:
         if enabled:
@@ -308,9 +325,13 @@ class OverrideStore:
             self._disabled.add(key)
         self.save()
 
-    def set_plugin_enabled(self, module: str, enabled: bool) -> None:
-        """插件总开关：关闭后面板与菜单卡片都不再展示该插件的指令。"""
+    def set_plugin_panel(self, module: str, enabled: bool) -> None:
+        """插件面板开关：关闭后该插件指令不注册到 QQ 指令面板。"""
         self.set_enabled(f"@{module}", enabled)
+
+    def set_plugin_card(self, module: str, enabled: bool) -> None:
+        """插件卡片开关：关闭后该插件不出现在菜单卡片中。"""
+        self.set_enabled(f"#{module}", enabled)
 
 
 def _admin_permission_types(permission_type_cls) -> tuple:

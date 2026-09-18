@@ -441,8 +441,8 @@ class Main(Star):
         if self.config.get("command_panel_menu_only", True):
             return normalize_commands([("菜单", "打开指令菜单", False)], prefix)
         disabled = self.overrides.disabled_set() if self.overrides else None
-        disabled_plugins = self.overrides.disabled_plugins() if self.overrides else None
-        return collect_commands(disabled, prefix, disabled_plugins)
+        panel_off = self.overrides.disabled_panel_plugins() if self.overrides else None
+        return collect_commands(disabled, prefix, panel_off)
 
     def _register_web_apis(self) -> None:
         register = getattr(self.context, "register_web_api", None)
@@ -463,7 +463,8 @@ class Main(Star):
             entries = collect_command_entries(
                 self.overrides.disabled_set() if self.overrides else None,
                 prefix,
-                self.overrides.disabled_plugins() if self.overrides else None,
+                panel_off=self.overrides.disabled_panel_plugins() if self.overrides else None,
+                card_off=self.overrides.disabled_card_plugins() if self.overrides else None,
             )
             _, selected = select_panel_items(entries, prefix)
         except Exception as exc:
@@ -474,7 +475,8 @@ class Main(Star):
         group_list = [
             {"plugin": name,
              "module": cmds[0]["module"],
-             "enabled": cmds[0]["plugin_enabled"],
+             "panel_enabled": cmds[0]["panel_enabled"],
+             "card_enabled": cmds[0]["card_enabled"],
              "commands": [
                  {**{k: c[k] for k in ("module", "name", "desc", "only_admin",
                                        "is_alias", "panel_ok", "enabled")},
@@ -493,10 +495,11 @@ class Main(Star):
         })
 
     async def api_cmdpanel_toggle(self):
-        """切换开关：带 name 为单条指令，name 为空为插件总开关。"""
+        """切换开关：带 name 为单条指令；否则按 target 切插件面板/卡片开关。"""
         payload = await request.json(default={})
         module = str(payload.get("module") or "")
         name = str(payload.get("name") or "")
+        target = str(payload.get("target") or "panel")
         enabled = payload.get("enabled")
         if not module or not isinstance(enabled, bool):
             return error_response("module/enabled 参数不合法")
@@ -504,8 +507,10 @@ class Main(Star):
             return error_response("插件尚未初始化完成", status_code=503)
         if name:
             self.overrides.set_enabled(f"{module}:{name}", enabled)
+        elif target == "card":
+            self.overrides.set_plugin_card(module, enabled)
         else:
-            self.overrides.set_plugin_enabled(module, enabled)
+            self.overrides.set_plugin_panel(module, enabled)
         if self.cmdpanel is not None:
             self.cmdpanel.force_sync()
         return json_response({"saved": True, "enabled": enabled})
@@ -522,9 +527,9 @@ class Main(Star):
         """指令菜单卡片：插件索引 → 单插件指令详情（蓝字点击直接触发）。"""
         prefix = self._panel_prefix()
         disabled = self.overrides.disabled_set() if self.overrides else None
-        disabled_plugins = self.overrides.disabled_plugins() if self.overrides else None
+        card_off = self.overrides.disabled_card_plugins() if self.overrides else None
         try:
-            entries = collect_command_entries(disabled, prefix, disabled_plugins)
+            entries = collect_command_entries(disabled, prefix, card_off=card_off)
         except Exception as exc:
             yield event.plain_result(f"指令菜单构建失败: {exc}")
             return
