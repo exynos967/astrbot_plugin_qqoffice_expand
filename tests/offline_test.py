@@ -371,4 +371,158 @@ async def star_wait_test():
     t("wait boom", await wait_for_star(boom, timeout=0.1, interval=0.02) is None)
 asyncio.run(star_wait_test())
 
+
+# ---------- cmdpanel（指令面板同步）----------
+from core.cmdpanel import (MARKER, CommandPanelSyncer, build_panels,
+                           normalize_commands, visual_len)
+
+t("visual len ascii", visual_len("/help") == 5)
+t("visual len cjk", visual_len("/签到") == 5)
+
+_items = normalize_commands([
+    ("help", "显示帮助", False),
+    ("h", "显示帮助", False),
+    ("help", "重复定义应去重", True),
+    ("很长的指令名字超过宽度限制", "x", False),
+    ("has space", "x", False),
+    ("", "x", False),
+    ("op", "", True),
+])
+_names = [i["name"] for i in _items]
+t("normalize prefix+sort", _names == ["/h", "/help", "/op"])
+t("normalize dedupe first wins", _items[1]["desc"] == "显示帮助" and _items[1]["only_admin"] is False)
+t("normalize only_admin+default desc", _items[2]["only_admin"] is True and _items[2]["desc"] == "指令: op")
+t("normalize desc truncate",
+  visual_len(normalize_commands([("a", "描述" * 20, False)])[0]["desc"]) <= 30)
+
+_big = normalize_commands([(f"cmd{i:02d}", f"d{i}", False) for i in range(45)])
+_panels = build_panels(_big)
+t("panels chunk", len(_panels) == 3 and len(_panels[0]["items"]) == 20 and len(_panels[2]["items"]) == 5)
+t("panels remark", _panels[1]["remark"] == f"{MARKER} 2/3")
+t("panels empty", build_panels([]) == [])
+
+
+class _FakeManage:
+    def __init__(self, records=None):
+        self.records = list(records or [])
+        self.calls = []
+        self._created = 0
+
+    async def panel_list(self, scope, cursor="", limit=None):
+        self.calls.append(("list", scope))
+        return {"records": list(self.records), "next_cursor": "", "is_end": True}
+
+    async def panel_create(self, scope, panel, target_type=None, **kw):
+        self.calls.append(("create", scope, target_type))
+        self._created += 1
+        self.records.append({"panel_id": f"p_new{self._created}", "panel": panel})
+        return {"panel_id": f"p_new{self._created}"}
+
+    async def panel_update(self, panel_id, panel, **kw):
+        self.calls.append(("update", panel_id))
+        for rec in self.records:
+            if rec["panel_id"] == panel_id:
+                rec["panel"] = panel
+        return {}
+
+    async def panel_delete(self, panel_id, **kw):
+        self.calls.append(("delete", panel_id))
+        self.records = [r for r in self.records if r["panel_id"] != panel_id]
+        return {}
+
+
+class _FakeView:
+    def __init__(self, manage):
+        self.manage = manage
+
+
+class _FakeRobotKey:
+    def __init__(self, prefix):
+        self._p = prefix
+
+    def prefix(self):
+        return self._p
+
+
+class _FakeRoute:
+    def __init__(self, pid, prefix):
+        self.platform_id = pid
+        self.robot_key = _FakeRobotKey(prefix)
+
+
+class _FakeRoutes:
+    def __init__(self, routes):
+        self.routes = routes
+
+
+class _FakeSvc:
+    def __init__(self, config, views):
+        self.config = config
+        self._views = views  # pid -> (prefix, view)
+        self.routes = _FakeRoutes({pid: _FakeRoute(pid, p) for pid, (p, _) in views.items()})
+
+    def instance(self, pid):
+        return self._views[pid][1]
+
+
+async def cmdpanel_sync_test():
+    manage = _FakeManage()
+    svc = _FakeSvc({"command_panel_sync": True, "command_panel_scopes": ["c2c"]},
+                   {"qq1": ("APP1@production", _FakeView(manage))})
+    syncer = CommandPanelSyncer(svc, collect=lambda: normalize_commands(
+        [("help", "帮助", False), ("set", "设置", True)]))
+    await syncer._run()
+    creates = [c for c in manage.calls if c[0] == "create"]
+    t("sync create", creates == [("create", "c2c", "all")])
+    t("sync mark", syncer._synced.get(("APP1@production", "c2c")) is not None)
+    t("sync only_admin kept",
+      manage.records[0]["panel"]["items"][1] == {
+          "type": "command", "name": "/set", "desc": "设置", "only_admin": True})
+
+    manage.calls.clear()
+    await syncer._run()
+    t("sync idempotent (sig hit)", manage.calls == [])
+
+    syncer._collect = lambda: normalize_commands([("help", "帮助改", False)])
+    manage.calls.clear()
+    await syncer._run()
+    t("sync update on change",
+      [c[0] for c in manage.calls] == ["list", "update"]
+      and manage.records[0]["panel"]["items"][0]["desc"] == "帮助改")
+
+    svc.config["command_panel_sync"] = False
+    manage.calls.clear()
+    await syncer._run()
+    t("cleanup on disable",
+      [c[0] for c in manage.calls] == ["list", "delete"] and not syncer._synced
+      and not manage.records)
+
+    manage2 = _FakeManage([
+        {"panel_id": "p1", "panel": {"remark": f"{MARKER} 1/2", "items": []}},
+        {"panel_id": "p2", "panel": {"remark": f"{MARKER} 2/2", "items": []}},
+        {"panel_id": "p_other", "panel": {"remark": "人工面板", "items": []}},
+    ])
+    svc2 = _FakeSvc({"command_panel_sync": True, "command_panel_scopes": ["c2c"]},
+                    {"qq1": ("APP1@production", _FakeView(manage2))})
+    syncer2 = CommandPanelSyncer(svc2, collect=lambda: normalize_commands([("help", "帮助", False)]))
+    await syncer2._run()
+    t("sync delete extra only managed",
+      [c for c in manage2.calls if c[0] == "delete"] == [("delete", "p2")]
+      and any(r["panel_id"] == "p_other" for r in manage2.records))
+    t("status shape",
+      set(syncer2.status()) >= {"enabled", "scopes", "synced", "running", "last_result"})
+
+    svc3 = _FakeSvc({"command_panel_sync": True, "command_panel_scopes": ["c2c"]},
+                    {"qq1": ("APP1@production", _FakeView(_FakeManage()))})
+    syncer3 = CommandPanelSyncer(svc3, collect=lambda: [])
+    syncer3.request_sync()
+    first = syncer3._task
+    syncer3.request_sync()
+    t("request_sync dedup", first is not None and syncer3._task is first)
+    await first
+    await syncer3.stop()
+    t("stop settles", syncer3._task is None)
+
+asyncio.run(cmdpanel_sync_test())
+
 print(f"\nALL {ok} CHECKS PASSED")

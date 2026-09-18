@@ -66,6 +66,18 @@
     "hint": "全局 LRU 上限，不随实例数量增长",
     "default": 50000
   },
+  "command_panel_sync": {
+    "type": "bool",
+    "description": "自动同步指令到 QQ 指令面板",
+    "hint": "收集系统与所有已激活插件的指令（含别名），以「/指令名」形式同步到指令面板；指令集变化在 15 秒内自动收敛；关闭时自动摘除本插件托管的面板",
+    "default": true
+  },
+  "command_panel_scopes": {
+    "type": "list",
+    "description": "指令面板生效场景",
+    "hint": "可选 c2c/group/channel/dm，均为全局生效（target_type=all）；修改后下一巡检周期自动同步",
+    "default": ["c2c", "group"]
+  },
   "retry_max": {
     "type": "int",
     "description": "频控重试次数上限",

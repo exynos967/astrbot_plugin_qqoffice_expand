@@ -28,6 +28,7 @@ from .api.manage import ManageAPI
 from .core import builders
 from .core.auth import ADAPTER_NAMES
 from .core.client import execute_call, send_rich_bound, upload_media_bound
+from .core.cmdpanel import CommandPanelSyncer
 from .core.errors import QQOfficeNotSupported, QQOfficeRoutingError
 from .core.events import (
     EVENT_ID_SCOPES,
@@ -64,6 +65,7 @@ class Main(Star):
         self.patcher: AdapterPatcher | None = None
         self.routes: RouteCore | None = None
         self.states: RobotStates | None = None
+        self.cmdpanel: CommandPanelSyncer | None = None
 
         # 能力目录只构建一次：命名空间类上的未绑定函数（视图调用时以自身
         # 命名空间为 self，保留 helper/_scene；见 BoundView._ns）。
@@ -111,6 +113,7 @@ class Main(Star):
         self.event_bus.bind_routes(self.routes)
 
         self.patcher.refresh()          # 已在运行的实例立即挂载（含热安装重载）
+        self.cmdpanel = CommandPanelSyncer(self, logger=logger)
         self._coordinator = asyncio.create_task(self._coordinator_loop())
         self._ready_flag = True
         logger.info(
@@ -129,6 +132,8 @@ class Main(Star):
             except (asyncio.CancelledError, Exception):
                 pass
             self._coordinator = None
+        if self.cmdpanel:
+            await self.cmdpanel.stop()    # 取消在途指令面板同步任务
         if self.event_bus:
             await self.event_bus.stop()   # 取消并等待本插件拥有的事件/ACK 任务
         if self.patcher:
@@ -201,6 +206,8 @@ class Main(Star):
         except Exception as exc:
             logger.error(f"[qqoffice_expand] 补丁差异应用失败: {exc!r}")
         self._prune_idle_states()
+        if self.cmdpanel is not None:
+            self.cmdpanel.request_sync()   # 签名不变时零网络调用
 
     async def _coordinator_loop(self) -> None:
         try:
@@ -276,6 +283,7 @@ class Main(Star):
             "robots": robots,
             "events": self.event_bus.status(),
             "patcher": self.patcher.status() if self.patcher else {},
+            "cmdpanel": self.cmdpanel.status() if self.cmdpanel else {},
             "refstore": self.refstore.snapshot() if self.refstore else {},
             "registry_methods": self.registry.names(),
             "config": {k: v for k, v in self.config.items()},
@@ -366,12 +374,27 @@ class Main(Star):
         lines.append(f"实例作用域订阅: {ev.get('scoped_subscribers') or '{}'}")
         lines.append(f"事件到达计数: {ev['counts'] or '{}'} 自动应答 {ev['auto_acked']} 次")
         lines.append(f"命名方法 {len(st['registry_methods'])} 个")
+        cp = st["cmdpanel"]
+        if cp:
+            lines.append(
+                f"指令面板同步: enabled={cp['enabled']} scopes={cp['scopes']} "
+                f"已同步={cp['synced']} 最近: {cp['last_result'] or '-'}"
+            )
         return "\n".join(lines)
 
     @filter.command("qqoffice_status")
     async def qqoffice_status(self, event: AstrMessageEvent):
         """查看 QQ 官方扩展能力的实例/挂载/订阅/频控状态。"""
         yield event.plain_result(self._format_status())
+
+    @filter.command("qqoffice_panel_sync")
+    async def qqoffice_panel_sync(self, event: AstrMessageEvent):
+        """强制全量比对并同步 AstrBot 指令到 QQ 指令面板（后台执行）。"""
+        if self.cmdpanel is None:
+            yield event.plain_result("指令面板同步器尚未初始化")
+            return
+        self.cmdpanel.force_sync()
+        yield event.plain_result("已触发指令面板强制同步（后台执行，结果见 /qqoffice_status）")
 
 
 # ---------------- 绑定视图 ----------------

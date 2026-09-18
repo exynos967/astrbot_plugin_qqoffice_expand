@@ -32,7 +32,8 @@ __平台支持__: 仅 QQ 官方机器人适配器（`qq_official` websocket 模�
 - 通用 `call()` 通道（视图方法）- 任意官方端点：频控令牌桶、主动消息配额、无状态 msg_seq、被动窗口自动降级、token/频控自动重试（重试前核验同一来源）、HTML 网关页识别、错误码 → 排查建议
 - 扩展事件订阅 - 全局与实例作用域两级；事件携带不可变来源；按钮/快捷菜单 3 秒时限自动应答（按来源机器人、同 id 一次）
 - REFIDX 引用索引 - 按机器人身份命名空间持久化（全局容量上限，不随实例数增长）
-- 诊断指令 `/qqoffice_status` - 实例/身份/挂载/订阅/频控状态一览
+- 诊断指令 `/qqoffice_status` - 实例/身份/挂载/订阅/频控/指令面板同步状态一览
+- 指令面板自动同步 - 收集系统与所有已激活插件的指令（含别名），以「/指令名」形式幂等同步到 QQ 官方[指令面板](https://bot.q.qq.com/wiki/develop/api-v2/autogen/api/v2_panels.post.html)（超 20 条自动分片）；插件装卸导致的指令变化在 15 秒内收敛；`/qqoffice_panel_sync` 可强制全量比对
 
 ## 安装
 
@@ -54,6 +55,8 @@ __平台支持__: 仅 QQ 官方机器人适配器（`qq_official` websocket 模�
 | `enable_group_member_events` | bool | true | 订阅群成员进出事件（intent 1<<24）；修改后需重载适配器生效 |
 | `ref_ttl_days` | int | 7 | 引用索引本地留存天数；0 表示不落盘 |
 | `ref_max_entries` | int | 50000 | 引用索引全插件容量上限（不随实例数增长） |
+| `command_panel_sync` | bool | true | 自动同步 AstrBot 指令到 QQ 指令面板；关闭时自动摘除本插件托管的面板 |
+| `command_panel_scopes` | list | ["c2c", "group"] | 指令面板生效场景（c2c/group/channel/dm，均全局生效） |
 | `retry_max` | int | 3 | 频控自动等待重试上限；401/11244 token 重试固定 1 次 |
 
 > 注：旧版本的 `prefer_new_domain` / `sandbox` 全局域名开关已移除。域名与环境由每个适配器自身的配置决定（Webhook 的 `is_sandbox`；生产新旧域名别名不构成不同机器人身份）。
