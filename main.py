@@ -398,9 +398,10 @@ class Main(Star):
     # ---------------- 指令面板页面 / Web API ----------------
 
     def _wake_prefixes(self) -> list[str]:
-        """AstrBot 全局唤醒前缀（读取失败退回官方默认 ["/"]）。"""
+        """AstrBot 指令唤醒前缀：根级 wake_prefix 列表（provider_settings 里那个
+        是 LLM 唤醒前缀，别搞混）；读取失败退回官方默认 ["/"]。"""
         try:
-            prefs = self.context.get_config().get("provider_settings", {}).get("wake_prefix")
+            prefs = self.context.get_config().get("wake_prefix")
             if isinstance(prefs, list):
                 return prefs
         except Exception:
